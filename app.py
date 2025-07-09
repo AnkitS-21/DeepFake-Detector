@@ -1,35 +1,54 @@
 import streamlit as st
-import tensorflow as tf
+import torch
+import torch.nn as nn
+from torchvision import models, transforms
 import numpy as np
 import cv2
 from PIL import Image
 import tempfile
-import os
 
-# Load the trained model
-model = tf.keras.models.load_model('model.h5')
+# 📦 Load ResNeXt model
+MODEL_PATH = "resnext50_deepfake.pth"
 
-# Preprocess function for images
+# Build the same architecture
+model = models.resnext50_32x4d(pretrained=False)
+num_ftrs = model.fc.in_features
+model.fc = nn.Linear(num_ftrs, 1)  # Binary classifier (output logits)
+
+# Load saved weights
+model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device('cpu')))
+model.eval()
+
+# Preprocessing pipeline (matches training)
+preprocess = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+])
+
+# 🖼️ Preprocess image
 def preprocess_image(img):
-    img = cv2.resize(img, (224, 224))  # Resize to match model input
-    img = img / 255.0  # Normalize
-    return np.expand_dims(img, axis=0)
+    img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    img = preprocess(img).unsqueeze(0)  # Add batch dimension
+    return img
 
-# Prediction for a single frame
+# 🔥 Prediction for a single frame
 def predict_frame(frame):
-    processed = preprocess_image(frame)
-    pred = model.predict(processed)[0][0]
-    label = "FAKE" if pred > 0.5 else "REAL"
-    confidence = pred if pred > 0.5 else 1 - pred
-    return label, confidence * 100
+    input_tensor = preprocess_image(frame)
+    with torch.no_grad():
+        logits = model(input_tensor)
+        prob = torch.sigmoid(logits).item()
+    label = "FAKE" if prob > 0.5 else "REAL"
+    confidence = prob * 100 if prob > 0.5 else (1 - prob) * 100
+    return label, confidence
 
-# Aggregate predictions for video
+# 🎥 Analyze video frame-by-frame
 def analyze_video(video_path, frame_skip=10):
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     results = []
     stframe = st.empty()
-    
+
     for frame_idx in range(total_frames):
         ret, frame = cap.read()
         if not ret:
@@ -39,17 +58,16 @@ def analyze_video(video_path, frame_skip=10):
             label, confidence = predict_frame(frame)
             results.append((label, confidence))
 
-            # Overlay prediction on frame
+            # Overlay prediction
             text = f"{label} ({confidence:.1f}%)"
             color = (0, 0, 255) if label == "FAKE" else (0, 255, 0)
             cv2.putText(frame, text, (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2, cv2.LINE_AA)
-
             stframe.image(frame, channels="BGR", caption=f"Frame {frame_idx}")
 
     cap.release()
 
-    # Aggregate final result
+    # Final decision
     fake_count = sum(1 for r in results if r[0] == "FAKE")
     real_count = sum(1 for r in results if r[0] == "REAL")
     final_label = "FAKE" if fake_count > real_count else "REAL"
@@ -57,8 +75,8 @@ def analyze_video(video_path, frame_skip=10):
 
     return final_label, confidence_score
 
-# Streamlit UI
-st.title("🎥 Deepfake Video Detector")
+# 🎛 Streamlit UI
+st.title("🎥 Deepfake Detector (PyTorch - ResNeXt50)")
 uploaded_file = st.file_uploader("Upload an image or video", type=["jpg", "png", "mp4", "avi"])
 
 if uploaded_file is not None:
@@ -76,5 +94,4 @@ if uploaded_file is not None:
 
         st.info("Analyzing video... This may take a while for longer videos.")
         final_label, confidence_score = analyze_video(video_path, frame_skip=15)
-
         st.success(f"Final Prediction: **{final_label}** ({confidence_score:.2f}% confidence)")
