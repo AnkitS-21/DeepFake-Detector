@@ -1,6 +1,7 @@
 streamlit
-torch==2.7.1
-torchvision==0.22.1
+torch==2.7.1+cpu
+torchvision==0.22.1+cpu
 numpy
 opencv-python
 Pillow
+-f https://download.pytorch.org/whl/cpu
